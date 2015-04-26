@@ -1,0 +1,451 @@
+---
+title: "Practical Machine Learning"
+author: "Johan Kullingsjö"
+date: "Friday, April 24, 2015"
+output: html_document
+---
+
+## Background  
+
+Six people have performed barbell lifts correctly and incorrectly in 5 different ways. About 160 features have been derived (including some metadata). We want to explore the dataset and try to predict how a person perform. To our help we have around 19000 classified records.
+
+### Strategy  
+
+1. Look through the variables  
+  - Type of variables (Quantative, Qualitative ...) 
+  - Distribution  
+  - Missing Values  
+  
+2. Make a Principal Component Analysis 
+  - First on raw variables
+  - Then on transformed 
+  
+3. Look for outliers 
+  - Remove outliers (whole records) from analysis  
+  *Later, look at them separately*
+  
+4. Decide on strategy (ML-method)
+  - Before looking at data we might do some guesses.  
+    * Five different behaviours (A, B, C, D, E)
+    * Six subjects pedro, adelmo, carlitos, charles, eurico, jeremy
+    
+    We can suspect to both see clustering for subjects and behaviour  
+    It's likely to see some extreme values that can be seen as measure artefacts  
+      
+    We have almost 20 000 examples, but only six subjects  
+    This means that if the suspicion is correct that the  
+    subjects differ substantially from each other in a PCA  
+    we will have difficulties to make a general model that would predict  
+    well for new subjects. 
+    
+    To decide a final machinelearning algorithm is an iterative process so  
+    where we finally ends depends on the performance on the different approaches we test.  
+    
+    How general should our model be?  
+    In this particular case it seems that our test data concists of 
+    data from same subjects as we have in our train data. If we don't  
+    need to predict from data collected from an unknown person we should be   
+    able to get pretty decent predictions. 
+    
+    Two models worth trying are 
+      * PCA and KNN (one model for each subject)  
+      * Random forrest like model  
+        
+    Both models will probably perform well on subjects in training data  
+    But generalize very poorly to subjects not included in the model. 
+    (Random forrest probably a bit better since it will likely find data from
+    the subject most alike todo predictions, but still poor). Another benefit from 
+    random forrest is that one model is enough and you don't need  
+    the name/identifier of each person.  
+        
+      
+    If we on the other hand wants to make a model that generalize well to new 
+    subjects we need something different. Since we have so few subjects it will be 
+    hard to know how well our model generalize to new persons (
+    because we don't know how well our subjects describe the space of all body shapes )  
+    Some metadata (height, weight, gender, age ...) would help (but that we don't have)  
+      
+    Two models worth trying are 
+      * PCA and KNN (one model for each behaviour) , Measure distance to model 
+      * Models that separates one behaviour from all others (create at least 
+      one model foreach behaviour)  (something like SVM )
+      
+      If we are lucky these generalize well (though hard to know with only six subjects )  
+      (and might be similar on both in sample 
+      and out of sample predictions  compared to the less general model)
+      
+    
+  5. Since the limitation is 5 plots I will only show the principal ideas and the end results in the plots.
+
+## The analysis
+
+LOAD LIBRARIES
+```{r load_libraries, echo=TRUE, results='hide', message=FALSE  }
+  # Load libraries
+  # caret 
+  library(dplyr)
+  library(tidyr)
+  library(pcaMethods)
+
+```
+
+Define functions for performing the suggested ML methods  
+
+```{r define_functions, echo=TRUE, results='hide', message=FALSE  }
+# my own KNN (change to other if time ...)
+knn <- function(scores_orig, scores_pred, orig_data, k=10) {
+  # predict behaviour class (classe column)
+  
+  dist <- apply(scores_orig, 1, FUN = (function(x) {sqrt(sum((scores_pred-x)**2))}))
+
+  # rank the distvector
+  # extract indices with rank <= k
+  ind <- which(rank(dist)<=k)
+  #print(ind)
+  
+  # select classe for those indices from orig data
+  my_class <- orig_data[ind,] %>%
+    select(classe)
+  # look at distribution, choose class with highest density
+  m <- data.frame(table(my_class))
+  
+  m <- m %>%
+    tbl_df %>%
+    arrange(desc(Freq))
+  
+  print(m)
+  prediction <- m$my_class[1][[1]]
+  
+  return(as.character(prediction))
+  
+  # Todo as improvements
+  # if equal, remove one until one is highest ...
+  
+  # we can also look at prior probabillities ... better do in other fct and ret table
+  # from here
+  
+}
+
+
+predict_multi <- function(data2predict_t, data2createModel, user, Pcs=6 , k=10) {
+    # predict behaviour for multiple records
+    model_data <- filter(data2createModel, outlier1!="strong",  user_name==user)
+    res_pca <- pca(model_data, scale = "uv", center = TRUE,nPcs = Pcs)
+# 
+    my_load <- loadings(res_pca)
+    varnames <- row.names(my_load)
+
+    pred_data <-  data2predict_t[,varnames] #use these for prediction
+  
+  res_pred <- predict(object = res_pca, 
+        newdata = pred_data,
+        pcs = nP(res_pca), 
+        pre = TRUE, 
+        post = FALSE)
+  
+  apply(res_pred$scores,MARGIN = 1, FUN = (function(x) {
+    x <- matrix(x, nrow = 1,dimnames = list(1,names(x)))
+    knn(scores_orig=scores(res_pca), scores_pred=x, orig_data=model_data, k=k)
+  }))
+}  
+
+  
+```
+
+```{r download_data, echo=FALSE, results='hide', message=FALSE }
+# Make sure we have data
+  #Training
+if(!file.exists("pml-training.csv")){
+  url1 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"  
+  download.file(url = url1,destfile = "pml-training.csv")
+}
+
+#Testing
+if(!file.exists("pml-testing.csv")){
+  url2 <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+  download.file(url = url2, destfile = "pml-testing.csv")
+}
+  
+```
+
+Load data  
+```{r load_data, echo=TRUE, results='hide', message=FALSE , cache=TRUE }
+# load data, cache the result
+train <- read.csv("pml-training.csv")
+test <- read.csv("pml-testing.csv")
+train <- tbl_df(train)
+test <- tbl_df(test)
+  
+``` 
+
+*Variable selection*
+As a first selection on variables I check for missing values and only keep
+measures that have few missing values and the metadata (identification, timestamp, behaviourclass ...). To look at the code, search for chunck name variable_selection  
+In total 60 variables (including 7 meta variables) are kept  
+
+```{r variable_selection, echo=FALSE, results='hide', message=FALSE  }
+# Let's see how variables differ in test and training
+base::setdiff(names(test), names(train)) # [1] "problem_id" (in test)
+base::setdiff(names(train), names(test)) # [1] "classe" (in train)
+glimpse(train)
+df_classes <- sapply(train,FUN = class) %>%
+  data.frame() 
+
+# We have a list of variables and classes
+names(df_classes) <- c("type")
+df_classes <- df_classes  %>%
+  mutate(varname = row.names(.)) %>%
+  tbl_df %>% 
+  select(varname, type) 
+
+# summary(df_classes)
+#    varname               type   
+#  Length:160         factor :37  
+#  Class :character   integer:35  
+#  Mode  :character   numeric:88 
+# To much to write out in the report but
+# I'll look through and see if some of them should be coerced to other type
+# etc
+
+# as a start the first seven variables will not be used in the 
+# evaluation. However, in the end, several of these are potentially useful
+# 
+# 1   integer                        X
+# 2    factor                user_name
+# 3   integer     raw_timestamp_part_1
+# 4   integer     raw_timestamp_part_2
+# 5    factor           cvtd_timestamp
+# 6    factor               new_window
+# 7   integer               num_window
+
+# Source: local data frame [19,622 x 7]
+# 
+#     X user_name raw_timestamp_part_1 raw_timestamp_part_2   cvtd_timestamp new_window num_window
+# 1   1  carlitos           1323084231               788290 05/12/2011 11:23         no         11
+# 2   2  carlitos           1323084231               808298 05/12/2011 11:23         no         11
+
+
+# Let's look at the factor type variables
+
+df_factor <- filter(df_classes[-c(1:7),], type=="factor") %>%
+  select(varname)
+
+factor_train <- train[, df_factor[[1]]]
+
+summary(factor_train)
+
+# We can see that we have alot of missing values and #DIV/0! 
+# since we only have around 300 or less values these are unlikely to
+# have any predictive power
+# they can be removed (and eventually be looked at separately)
+# however, one variable we need was hidden in those, the classe variable
+# we keep that one
+
+
+df_factor <- df_factor[df_factor!="classe",]
+keep <- base::setdiff(names(train), df_factor[[1]])
+train2 <- train[, keep] # change later to train!
+train2 %>%
+  print
+
+missing <- sapply(train2, FUN = function(x){sum(is.na(x)/length(x))*100}) %>%
+  data.frame
+
+names(missing) = c("percent_missing")
+missing$varnames <- row.names(missing)
+missing <- missing %>%
+  tbl_df %>%
+  select(varnames, percent_missing) %>%
+  arrange(desc(percent_missing)) %>%
+  filter(percent_missing <= 90) %>%
+  print
+  
+
+
+# We are left with 60 variables (including metadata)
+#keep <- base::setdiff(names(train2), missing[[1]])
+train3 <- train2[, missing[,1][[1]]] 
+train4 <- train3 %>%
+  select(X:num_window,classe,roll_belt:magnet_forearm_z) %>%
+  mutate(X=factor(X), user_name=factor(user_name), raw_timestamp_part_1=factor(raw_timestamp_part_1), raw_timestamp_part_2=factor(raw_timestamp_part_2),   cvtd_timestamp=factor(cvtd_timestamp), new_window=factor(new_window), num_window=factor(num_window))
+
+```
+
+*PCA overall*  
+Principal Component Analysis, color on subjects. 
+We have a clear separation between all subjects (except overlap in one case)  
+When investigating higher components we discover one record is a severe outlier 
+(Outlier can be identified with X = "5373", search code chunk pca_overall for code)  
+We therefore add a column "outlier" to our dataset. This will be used to exclude this 
+observation when we create our training models later on.  
+
+```{r pca_overall, echo=FALSE, results='hide', message=FALSE , cache=TRUE,fig.keep='last'}
+resALL <- pca(train4, scale = "uv", center = TRUE, nPcs = 6)
+loadingALL <- loadings(resALL)
+slplot(resALL,pcs = c(1,2))
+slplot(resALL,pcs = c(1,2), scol=train4$user_name )
+
+slplot(resALL,pcs = c(3,4), scol=train4$user_name )
+# one strong outlier we need to remove
+check_outliers <- train4 %>%
+  select(starts_with("gyr"))
+train4$outlier1 <- ""
+train4$outlier1[train4$X == "5373"] <- "strong"
+check_outliers$outlier[check_outliers$gyros_forearm_z>200] <- "strong"
+check_outliers2 <- check_outliers %>% filter(outlier!="strong")
+# boxplot not working!!!
+# boxplot(x = select(check_outliers2, gyros_arm_z:gyros_forearm_z), col=train4$user_name)
+#resALL2 <- pca(train4, scale = "uv", center = TRUE, nPcs = 6)
+resALL2 <- pca(filter(train4, outlier1!="strong"), scale = "uv", center = TRUE, nPcs = 10)
+slplot(resALL2,pcs = c(1,2), scol=train4$user_name[train4$outlier1!="strong"] )
+
+
+
+
+``` 
+  
+```{r pca_behaviour_class, echo=FALSE, results='hide', message=FALSE ,fig.keep='none' }
+resA <- pca(filter(train4, outlier1!="strong",  classe=="A"), scale = "uv", center = TRUE,nPcs = 6)
+resB <- pca(filter(train4, outlier1!="strong", classe=="B"), scale = "uv", center = TRUE,nPcs = 6)
+resC <- pca(filter(train4, outlier1!="strong", classe=="C"), scale = "uv", center = TRUE,nPcs = 6)
+resD <- pca(filter(train4, outlier1!="strong", classe=="D"), scale = "uv", center = TRUE,nPcs = 6)
+resE <- pca(filter(train4, outlier1!="strong", classe=="E"), scale = "uv", center = TRUE,nPcs = 6)
+
+resALL <- pca(train, scale = "uv", center = TRUE)
+slplot(resA, scol=filter(train4, outlier1!="strong",  classe=="A")
+       %>%select(user_name)%>% (function(x) {x[[1]]}), pcs = c(5,6))
+
+slplot(resB, scol=filter(train4, outlier1!="strong",  classe=="B")
+       %>%select(user_name)%>% (function(x) {x[[1]]}), pcs = c(5,6))
+
+slplot(resC, scol=filter(train4, outlier1!="strong",  classe=="C")
+       %>%select(user_name)%>% (function(x) {x[[1]]}), pcs = c(1,2))
+
+slplot(resD, scol=filter(train4, outlier1!="strong",  classe=="D")
+       %>%select(user_name)%>% (function(x) {x[[1]]}), pcs = c(5,6))
+
+slplot(resE, scol=filter(train4, outlier1!="strong",  classe=="E")
+       %>%select(user_name)%>% (function(x) {x[[1]]}), pcs = c(5,6))
+
+
+
+  
+```
+*PCA for subject Pedro,  
+color by behaviour class (classe)*  
+
+Only two first components shown. We can see slight tendencies to separation 
+netween the different behaviours (code chunck PCA_subject)
+```{r PCA_subject, echo=FALSE, results='hide', message=FALSE, fig.keep='last', warning=FALSE  }
+  # Now let's look at one subject at a time
+# adelmo carlitos charles eurico jeremy pedro
+res_adelmo <- pca(filter(train4, outlier1!="strong",  user_name=="adelmo"), scale = "uv", center = TRUE,nPcs = 6)
+
+res_carlitos <- pca(filter(train4, outlier1!="strong",  user_name=="carlitos"), scale = "uv", center = TRUE,nPcs = 6)
+res_charles <- pca(filter(train4, outlier1!="strong",  user_name=="charles"), scale = "uv", center = TRUE,nPcs = 6)
+res_eurico <- pca(filter(train4, outlier1!="strong",  user_name=="eurico"), scale = "uv", center = TRUE,nPcs = 6)
+res_jeremy <- pca(filter(train4, outlier1!="strong",  user_name=="jeremy"), scale = "uv", center = TRUE,nPcs = 6)
+res_pedro <- pca(filter(train4, outlier1!="strong",  user_name=="pedro"), scale = "uv", center = TRUE,nPcs = 6)
+
+
+slplot(res_adelmo, scol=filter(train4, outlier1!="strong",  user_name=="adelmo")
+       %>%select(classe)%>% (function(x) {x[[1]]}), pcs = c(3,4))
+
+slplot(res_carlitos, scol=filter(train4, outlier1!="strong",  user_name=="carlitos")
+       %>%select(classe)%>% (function(x) {x[[1]]}), pcs = c(3,4))
+slplot(res_charles, scol=filter(train4, 
+                                outlier1!="strong",  user_name=="charles")
+       %>%select(classe)%>% (function(x) {x[[1]]}), pcs = c(3,4))
+slplot(res_eurico, scol=filter(train4, 
+                               outlier1!="strong",  user_name=="eurico")
+       %>%select(classe)%>% (function(x) {x[[1]]}), pcs = c(3,4))
+slplot(res_jeremy, scol=filter(train4, 
+                               outlier1!="strong",  user_name=="jeremy")
+       %>%select(classe)%>% (function(x) {x[[1]]}), pcs = c(1,2))
+slplot(res_pedro, scol=
+         filter(train4, outlier1!="strong",  user_name=="pedro")
+       %>%select(classe)%>% (function(x) {x[[1]]}), pcs = c(1,2))
+
+  
+```
+  
+# Prediction
+
+<!---
+http://www.bioconductor.org/packages/release/bioc/manuals/pcaMethods/man/pcaMethods.pdf
+
+See page 50 for prediction
+-->
+```{r echo=FALSE, results='asis', message=FALSE , cache=TRUE }
+# Running out of time, let's make things easy for us
+# Our test data has names in it, thus, instead of trying a
+# general solution we will make a prediction for each person
+# in the traindata, this simplifies alot 
+# (though won't work for new people)
+
+# ## S3 method for class 'pcaRes'
+# predict(object, newdata, pcs = nP(object), pre = TRUE,
+# post = TRUE, ...)
+# ## S4 method for signature 'pcaRes'
+# predict(object, newdata, pcs = nP(object), pre = TRUE,
+# post = TRUE, ...)
+# res_pedro
+
+# Pedro
+# res_pca <- res_pedro
+# my_load <- loadings(res_pca)
+# varnames <- row.names(my_load)
+# user="pedro"
+# user="adelmo"
+# user="carlitos"
+# user="charles"
+# user="eurico"
+# user="jeremy"
+users = c("pedro", "adelmo", "carlitos", "charles", "eurico", "jeremy")
+#user1="pedro"
+
+#data1 <-  filter(train4, outlier1!="strong",  user_name==user1)
+#pred_data <- data[1,varnames]
+
+
+
+# res_pred <- predict(object = res_pca, 
+#         newdata = pred_data,
+#         pcs = nP(res_pca), 
+#         pre = TRUE, 
+#         post = FALSE)
+
+
+
+#knn(scores_orig=scores(res_pca), scores_pred=res_pred$scores, orig_data=data, k=10)
+#data <-  filter(test,   user_name==user)
+
+for(user in users) {
+  data <-  filter(train4, outlier1!="strong",  user_name==user)
+  pred_list <- predict_multi(data2predict_t = data[,], 
+                           data2createModel = train4, 
+                           user = user,Pcs = 8 , k=11 )
+  # check correct classified
+tt <- data %>% select(classe) %>% mutate(pred=pred_list, corr=(classe==pred))
+sum(tt$corr)/nrow(tt)
+print(paste("in sample error for PCA based on ", user, " is ", tt))
+  
+}
+
+# data <-  filter(train4, outlier1!="strong",  user_name==user)
+# #data <- data1
+# 
+# 
+# pred_list <- predict_multi(data2predict_t = data[,], 
+#                            data2createModel = train4, 
+#                            user = user,Pcs = 8 , k=11 )
+# 
+# # check correct classified
+# tt <- data %>% select(classe) %>% mutate(pred=pred_list, corr=(classe==pred))
+# sum(tt$corr)/nrow(tt)
+# 
+# 
+
+``` 
+
+
